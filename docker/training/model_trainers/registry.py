@@ -46,7 +46,7 @@ def _output_dir(cfg: dict | None) -> Path:
 
 _TREE_MODEL_TYPES = {"lightgbm", "xgboost", "catboost", "linear", "random_forest"}
 
-_DL_MODEL_TYPES = {"gru", "lstm", "alstm", "transformer", "tabnet", "tcn", "nativetft", "mlp"}
+_DL_MODEL_TYPES = {"lab_mlp", "gru", "lstm", "alstm", "transformer", "tabnet", "tcn", "nativetft", "mlp"}
 
 _CUSTOM_DL_MODEL_TYPES = {"nativetft", "mlp"}  # 非 Qlib 的自定义 DL 模型（hybrid 已剔除，未实现）
 
@@ -233,6 +233,11 @@ def _dispatch_dl(
     trainer = MODEL_REGISTRY.get(model_type)
     if trainer is None or not trainer.is_dl:
         raise ValueError(f"Unsupported DL model_type: {model_type}")
+    if model_type == "lab_mlp":
+        if single:
+            raise NotImplementedError("lab_mlp functional adapter supports single-model jobs only")
+        from model_trainers.lab_mlp import train_lab_mlp
+        return train_lab_mlp(df, features, cfg, hardware)
     if trainer.dl_adapter == "nativetft":
         return DLAdapter.run_nativetft(
             model_type, cfg, features, train_df, val_df, test_df, df,

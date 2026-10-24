@@ -65,6 +65,7 @@ _SHARED_FIELDS: dict[str, Any] = {
 # 注意 linear/rf/mlp 与 DL 组共用顶层 dl_params 键（实现如此）：
 # 顶层键隔离能拦住树↔DL 互串（G1 主案），DL 族内的子键误用无害（被忽略）。
 MODEL_PARAMS_FIELD: dict[str, str] = {
+    "lab_mlp": "dl_params",
     "lightgbm": "lgb_params",
     "xgboost": "xgb_params",
     "catboost": "catboost_params",
@@ -82,6 +83,7 @@ MODEL_PARAMS_FIELD: dict[str, str] = {
 
 # 模型名 → 框架（展示用，与 _get_model_framework 口径一致；mlp 为 sklearn 实现）。
 MODEL_FRAMEWORK: dict[str, str] = {
+    "lab_mlp": "pytorch",
     "lightgbm": "lightgbm",
     "xgboost": "xgboost",
     "catboost": "catboost",

@@ -218,6 +218,10 @@ class ModelLoader:
                 raise FileNotFoundError(f"No PyTorch model file found in {model_dir}")
             model_file = candidates[0]
 
+        if metadata.get("model_type") == "lab_mlp":
+            from backend.shared.lab_torch_model import load_lab_model
+            return load_lab_model(model_file, metadata)
+
         # Qlib DL 模型: 通过 model_class_name + model_params 重建
         model_class_name = metadata.get("model_class_name")
         if model_class_name:

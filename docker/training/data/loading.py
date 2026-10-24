@@ -182,7 +182,7 @@ def load_data(
     # 给标签构建预留边界，避免裁剪过早影响 shift/rolling
     range_start = pd.Timestamp(train_start) - pd.Timedelta(days=max(7, horizon + 3))
     upper_bound = test_end or valid_end or train_end
-    range_end = pd.Timestamp(upper_bound) + pd.Timedelta(days=max(7, horizon + 3))
+    range_end = pd.Timestamp(upper_bound) + pd.Timedelta(days=max(21, 3 * (horizon + _EXECUTION_LAG_DAYS)))
 
     direct_factor_source = str(factor_source or "").strip()
     if direct_factor_source and market_upper in _MARKET_DATA_DIR_ENV:
@@ -419,7 +419,7 @@ def load_data(
                 ends.append(valid_end)
             if test_end:
                 ends.append(test_end)
-            end_year = max(pd.Timestamp(e).year for e in ends)
+            end_year = max(range_end.year, max(pd.Timestamp(e).year for e in ends))
 
             chunks = []
             for year in range(max(start_year - 1, 2016), end_year + 1):
@@ -663,7 +663,9 @@ def load_data(
     df = df[keep_cols].reset_index(drop=True)
 
     # 收益预测使用截面 rank 目标，强调同日选股排序；分类预测保持二元标签。
-    if _target_mode != "classification":
+    if _target_mode == "lab_return":
+        df["label"] = df["label"].clip(-0.3, 0.3)
+    if _target_mode not in ("classification", "lab_return"):
         df["label"] = df.groupby("trade_date")["label"].rank(pct=True) - 0.5
 
     logger.info(

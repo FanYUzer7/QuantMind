@@ -296,6 +296,7 @@ def _pool_metadata(cfg: dict) -> dict:
 def _get_model_framework(model_type: str) -> str:
     """返回模型框架名。"""
     mapping = {
+        "lab_mlp": "pytorch",
         "lightgbm": "lightgbm",
         "xgboost": "xgboost",
         "catboost": "catboost",

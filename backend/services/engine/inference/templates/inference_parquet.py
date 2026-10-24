@@ -140,6 +140,10 @@ def _load_pytorch_model(model_path: Path, meta: dict):
         logger.error("模型为 PyTorch 格式，但 torch 未安装")
         sys.exit(1)
 
+    if meta.get("model_type") == "lab_mlp":
+        from backend.shared.lab_torch_model import load_lab_model
+        return ("torch", load_lab_model(model_path, meta))
+
     model_class_name = meta.get("model_class_name")
     model_type = str(meta.get("model_type", ""))
     # NativeTFT：训练端保存 state_dict，需重建架构再 load_state_dict

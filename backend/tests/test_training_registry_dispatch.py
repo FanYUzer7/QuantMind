@@ -184,6 +184,7 @@ def test_registry_loop_covers_all_dl_minus_mlp():
     tree = _load_registry_tree()
     dl_types = _parse_dl_model_types(tree)
     assert dl_types == {
+        "lab_mlp",
         "gru",
         "lstm",
         "alstm",

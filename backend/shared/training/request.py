@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ALLOWED_MODEL_TYPES = frozenset(
     {
+        "lab_mlp",
         "lightgbm",
         "xgboost",
         "catboost",
@@ -40,7 +41,7 @@ ALLOWED_MODEL_TYPES = frozenset(
         # 已从可选项剔除；有专用管线实现后再加回。
     }
 )
-ALLOWED_TARGET_MODE = {"return", "classification"}
+ALLOWED_TARGET_MODE = {"return", "classification", "lab_return"}
 ALLOWED_DEAL_PRICE = {"open", "close"}
 
 _BENCHMARK_MARKET = {

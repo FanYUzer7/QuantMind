@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Market = Literal["CN", "HK", "US", "CRYPTO", "FUTURES"]
 ModelType = Literal[
+    "lab_mlp",
     "lightgbm",
     "xgboost",
     "catboost",
@@ -95,7 +96,7 @@ class LabelCfg(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     target_horizon_days: int = 1
-    target_mode: Literal["return", "classification"] = "return"
+    target_mode: Literal["return", "classification", "lab_return"] = "return"
     label_formula: str = ""
     effective_trade_date: str = ""
     training_window: str = ""
