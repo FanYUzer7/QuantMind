@@ -1,0 +1,35 @@
+version: 1
+default_consensus_threshold: 0.02
+default_min_consensus_sources: 1
+markets:
+  A:
+    daily_kline:
+      tier: T1
+      primary: own_warehouse
+      fallbacks: []
+      consensus: false
+      cleanup: false
+    stock_list:
+      tier: T1
+      primary: own_warehouse
+      fallbacks: []
+      consensus: false
+      cleanup: false
+    valuation:
+      tier: T1
+      primary: own_warehouse
+      fallbacks: []
+      consensus: false
+      cleanup: false
+    financial_report:
+      tier: T1
+      primary: own_warehouse
+      fallbacks: []
+      consensus: false
+      cleanup: false
+    dividend:
+      tier: T1
+      primary: own_warehouse
+      fallbacks: []
+      consensus: false
+      cleanup: false

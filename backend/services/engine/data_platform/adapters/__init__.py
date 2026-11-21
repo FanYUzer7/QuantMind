@@ -4,7 +4,7 @@
     from backend.services.engine.data_platform.adapters import register_all
     register_all()
 
-A 股唯一数据源为 quantdb_local（本地 parquet）。
+A 股默认数据源为 quantdb_local（本地 parquet）；配置自有仓库后可注册 own_warehouse。
 akshare / efinance / yahoo_finance / simonlin_global 仅服务 HK/US 市场。
 """
 
@@ -27,6 +27,7 @@ def _collect() -> None:
     out: list[tuple[str, Callable[[], bool]]] = []
 
     for mod_name in (
+        "backend.services.engine.data_platform.adapters.own_warehouse_adapter",
         # A 股唯一数据源：QuantDB 本地 parquet
         "backend.services.engine.data_platform.adapters.quantdb_local_adapter",
         # HK/US 市场数据源

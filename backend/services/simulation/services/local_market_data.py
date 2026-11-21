@@ -274,6 +274,14 @@ class LocalMarketData:
     @staticmethod
     def _resolve_hub(market: Market) -> QuantDBDataHub:
         if market is Market.CN:
+            import os
+
+            if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+                from backend.services.engine.data_platform.own_data.hub import (
+                    OwnWarehouseHub,
+                )
+
+                return OwnWarehouseHub.get_instance()
             return QuantDBDataHub.get_instance()
         if market is Market.HK:
             from backend.services.engine.data_platform.quanthk_hub import QuantHKDataHub
@@ -354,11 +362,19 @@ class LocalMarketData:
         today = df[df["dt"] == dt_int]
         if today.empty:
             return {}
+        if getattr(self._hub, "canonical_units", False) is True:
+            unknown = today["is_st"].isna()
+            if unknown.any():
+                logger.warning("Owned market %s: %s symbols have unknown historical ST; no executable bar returned for them", trade_date, int(unknown.sum()))
+                today = today.loc[~unknown].copy()
 
         # 量额单位自动探测仅 CN；其余市场 volume=股/枚、amount=计价货币原样，
         # vwap=amount/volume。CN 当前统一为 volume=股 / amount=万元，探测应命中
         # LEGACY（amount 万元→元、volume 保持股）；CURRENT 分支仅历史口径兜底。
-        if self.market is Market.CN:
+        if getattr(self._hub, "canonical_units", False) is True:
+            volume_to_shares = 1.0
+            amount_to_yuan = 1.0
+        elif self.market is Market.CN:
             scale = _detect_amount_scale(today)
             # volume 为「手」时（历史口径）需换算为股，amount 已是元。
             volume_to_shares = 100.0 if scale == _SCALE_CURRENT else 1.0
@@ -373,7 +389,12 @@ class LocalMarketData:
             prev = df[df["dt"] == prev_dt_int]
             pre_close_map = dict(zip(prev["symbol"], prev["close"].astype(float), strict=True))
 
-        st_symbols = self._st_symbol_set() if self.market is Market.CN else frozenset()
+        st_symbols = (
+            self._st_symbol_set()
+            if self.market is Market.CN
+            and getattr(self._hub, "canonical_units", False) is not True
+            else frozenset()
+        )
 
         bars: dict[str, DailyBar] = {}
         for row in today.itertuples(index=False):
@@ -386,7 +407,13 @@ class LocalMarketData:
             vwap = amount / volume if volume > 0 and amount > 0 else close
 
             pre_close = pre_close_map.get(symbol, 0.0)
-            is_st = symbol in st_symbols
+            if getattr(self._hub, "canonical_units", False) is True:
+                state = getattr(row, "is_st", None)
+                if state is None or pd.isna(state):
+                    raise ValueError("Owned simulation requires known historical ST status")
+                is_st = bool(state)
+            else:
+                is_st = symbol in st_symbols
             if self.market is Market.CN and pre_close > 0:
                 limit_up, limit_down = compute_limits(
                     symbol, pre_close, is_st=is_st, trade_date=trade_date
@@ -435,9 +462,23 @@ class LocalMarketData:
             "SELECT symbol, dt, open, high, low, close, volume, amount "
             f"FROM {self._kline_view} WHERE dt IN ({dt_list})"
         )
+        if getattr(self._hub, "canonical_units", False) is True:
+            sql = (
+                "SELECT symbol, dt, open, high, low, close, volume, amount, is_st "
+                f"FROM {self._kline_view} WHERE dt IN ({dt_list}) "
+                "AND NOT regexp_matches(quality_flags,'invalid_|unit_mismatch')"
+            )
         try:
-            return self._hub.query(sql)
+            frame = self._hub.query(sql)
+            if (
+                getattr(self._hub, "canonical_units", False) is True
+                and frame.duplicated(["symbol", "dt"]).any()
+            ):
+                raise ValueError("Conflicting owned simulation bars")
+            return frame
         except Exception as exc:
+            if getattr(self._hub, "canonical_units", False) is True:
+                raise
             logger.error("本地行情扫描失败 dt=%s: %s", dt_list, exc)
             return pd.DataFrame()
 
