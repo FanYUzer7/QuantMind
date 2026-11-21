@@ -7,6 +7,7 @@ import os
 import random
 import time
 import traceback
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -152,11 +153,8 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
             initial_capital=request.initial_capital,
         )
 
+        data_resources = ExitStack()
         try:
-            self.initialize(
-                provider_uri=getattr(request, "qlib_provider_uri", None),
-                region=getattr(request, "qlib_region", None),
-            )
             self._set_deterministic_seed(self._resolve_seed(request.seed))
 
             # --- Global Stock Pool Resolution [START] ---
@@ -358,6 +356,25 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
                 request.start_date = request.start_date or default_start
                 request.end_date = request.end_date or default_end
             # --- Backtest Date Resolution [END] ---
+
+            owned_root = os.getenv("QM_OWN_WAREHOUSE_ROOT", "")
+            runtime_provider_uri = getattr(request, "qlib_provider_uri", None)
+            if owned_root and (Path(owned_root) / "STORE.json").is_file() and self._infer_backtest_market(request) == "CN":
+                from backend.services.engine.data_platform.own_data.hub import OwnWarehouseHub
+                from backend.services.engine.data_platform.own_data.temporary_qlib import temporary_provider, task_symbols, temporary_root
+                import fcntl
+
+                guard = data_resources.enter_context((temporary_root(owned_root) / ".runtime.lock").open("a"))
+                fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                symbols = task_symbols(OwnWarehouseHub(owned_root), request.universe, request.benchmark)
+                provider = data_resources.enter_context(temporary_provider(
+                    owned_root, symbols=symbols, start=request.start_date, end=request.end_date,
+                ))
+                runtime_provider_uri = str(provider)
+            self.initialize(
+                provider_uri=runtime_provider_uri,
+                region=getattr(request, "qlib_region", None),
+            )
 
             task_log.info(
                 "signal_raw", "原始signal配置", signal=request.strategy_params.signal,
@@ -967,6 +984,9 @@ class QlibBacktestServiceRuntimeMixin(QlibBacktestServiceQueryMixin):
                 )
 
             return result
+
+        finally:
+            data_resources.close()
 
     def _resolve_path(self, path_str: str) -> str | None:
         if not path_str:

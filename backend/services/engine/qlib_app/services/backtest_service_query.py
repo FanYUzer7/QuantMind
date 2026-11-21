@@ -25,12 +25,6 @@ class QlibBacktestServiceQueryMixin:
         exclude_trades: bool = False,
     ) -> QlibBacktestResult | None:
         """获取回测结果，优先从内存、缓存，最后从持久化层获取"""
-        try:
-            if not self._initialized:
-                self.initialize()
-        except Exception as exc:
-            task_logger.warning("initialize_failed", "get_result 初始化 Qlib 失败，将继续返回原始结果", error=str(exc))
-
         normalized_user_id = normalize_user_id(user_id) if user_id else None
         cache_key = (
             f"{tenant_id}:{normalized_user_id}:{backtest_id}"

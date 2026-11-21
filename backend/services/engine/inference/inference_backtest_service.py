@@ -30,6 +30,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from backend.services.engine.data_platform.own_data.current import owned_read
+
 from .shenwan_industry import load_shenwan_industry_map
 
 logger = logging.getLogger(__name__)
@@ -241,6 +243,24 @@ def _load_price_panel(
     if not trade_dates:
         return pd.DataFrame()
 
+    import os
+    if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+        from backend.services.engine.data_platform.own_data.warehouse import Warehouse
+        start = (pd.Timestamp(min(trade_dates)) - pd.Timedelta(days=90)).date()
+        with Warehouse(os.environ["QM_OWN_WAREHOUSE_ROOT"]) as w:
+            panel = w.connection.execute(
+                "SELECT * FROM research_daily_bars WHERE asset_type='stock' AND price_adjustment='hfq' AND trade_date BETWEEN ?::DATE AND ?::DATE ORDER BY symbol,trade_date",
+                [str(start), max(trade_dates)],
+            ).fetchdf()
+        panel["pct_change"] = panel.groupby("symbol").close.pct_change(fill_method=None) * 100
+        panel["ma20"] = panel.groupby("symbol").close.transform(lambda x: x.rolling(20, min_periods=20).mean())
+        panel["trade_date"] = pd.to_datetime(panel.trade_date).dt.strftime("%Y-%m-%d")
+        panel = panel[panel.trade_date.isin(trade_dates)]
+        unknown = panel.is_st.isna()
+        if unknown.any():
+            logger.warning("Owned backtest excludes %d rows with unknown historical ST", int(unknown.sum()))
+        return panel[~unknown & ~panel.quality_flags.str.contains("invalid_|state_conflict", regex=True)].copy()
+
     # 按月分组查询
     month_dates: dict[str, list[str]] = {}
     for d in trade_dates:
@@ -344,9 +364,9 @@ def _load_index_close(
     try:
         from datetime import date as _date
 
-        from backend.services.engine.data_platform.quantdb_hub import QuantDBDataHub
+        from backend.services.engine.data_platform.market_hub import get_hub_for_market
 
-        hub = QuantDBDataHub()
+        hub = get_hub_for_market("CN")
         df = hub.fetch_index_kline(
             sym,
             _date.fromisoformat(trade_dates[0]),
@@ -854,6 +874,7 @@ class _SimulationEngine:
 # ---------------------------------------------------------------------------
 
 
+@owned_read
 def run_inference_backtest(
     *,
     model_id: str,

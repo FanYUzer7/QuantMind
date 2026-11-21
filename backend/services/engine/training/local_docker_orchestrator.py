@@ -135,7 +135,9 @@ else:
 
 # 数据目录：feature_snapshots 在 /app/db/feature_snapshots（来自 ./db:/app/db 挂载）
 # Docker volume host path 需要宿主机绝对路径
-if Path("/app/db/feature_snapshots").exists():
+if os.getenv("QM_OWN_FEATURES_HOST_DIR", "").strip():
+    _LOCAL_DATA_PATH = os.environ["QM_OWN_FEATURES_HOST_DIR"].strip()
+elif Path("/app/db/feature_snapshots").exists():
     _LOCAL_DATA_PATH = str(_HOST_PROJECT_PATH / "db" / "feature_snapshots")
 elif Path("/data/feature_snapshots").exists():
     _LOCAL_DATA_PATH = str(_HOST_PROJECT_PATH / "data" / "feature_snapshots")
@@ -180,6 +182,9 @@ def _market_data_mount(market: str) -> tuple[str, str]:
     """返回 (宿主机数据目录, 训练容器挂载目录)；CN 复用既有 QuantDB 常量。"""
     market = normalize_market(market)
     if market == "CN":
+        owned_root = os.getenv("QM_OWN_WAREHOUSE_ROOT", "").strip()
+        if owned_root and (Path(owned_root) / "STORE.json").is_file():
+            return owned_root, owned_root
         return _QUANTDB_DATA_HOST_PATH, _QUANTDB_DATA_MOUNT_DIR
     container_dir = (
         os.getenv(_MARKET_DATA_DIR_ENV[market], "").strip()
@@ -415,8 +420,14 @@ class LocalDockerOrchestrator(TrainingOrchestrator):
             import pyarrow.parquet as pq
             from pathlib import Path
 
-            parquet_dir = Path(_LOCAL_DATA_MOUNT_DIR)
+            owned = bool(os.getenv("QM_OWN_FEATURES_HOST_DIR", "").strip())
+            parquet_dir = Path(
+                os.getenv("QM_OWN_FEATURES_CONTAINER_DIR", _LOCAL_DATA_MOUNT_DIR)
+                if owned else _LOCAL_DATA_MOUNT_DIR
+            )
             if not parquet_dir.exists():
+                if owned:
+                    raise ValueError("Owned feature snapshot is not mounted: " + str(parquet_dir))
                 logger.warning("[%s] Parquet dir not found: %s", run_id, parquet_dir)
                 return requested_features, []
 
@@ -432,6 +443,8 @@ class LocalDockerOrchestrator(TrainingOrchestrator):
                 for p in sorted(parquet_dir.glob("model_features_20*.parquet")):
                     parquet_cols |= set(pq.ParquetFile(p).schema_arrow.names)
             if not parquet_cols:
+                if owned:
+                    raise ValueError("Owned feature snapshot has no annual Parquet files")
                 logger.warning("[%s] No parquet files in %s", run_id, parquet_dir)
                 return requested_features, []
 
@@ -439,6 +452,8 @@ class LocalDockerOrchestrator(TrainingOrchestrator):
             missing = [f for f in requested_features if f not in parquet_cols]
             return valid, missing
         except Exception as exc:
+            if os.getenv("QM_OWN_FEATURES_HOST_DIR", "").strip():
+                raise
             logger.warning("[%s] Feature filter failed: %s", run_id, exc)
             return requested_features, []
 
@@ -520,6 +535,11 @@ class LocalDockerOrchestrator(TrainingOrchestrator):
         else:
             valid_features, missing_features = self._filter_features_by_parquet(
                 run_id, requested_features
+            )
+        if missing_features and os.getenv("QM_OWN_FEATURES_HOST_DIR", "").strip():
+            raise ValueError(
+                "Owned snapshot is missing explicitly requested features: "
+                + ", ".join(missing_features)
             )
         if missing_features:
             logger.warning(
@@ -783,6 +803,11 @@ class LocalDockerOrchestrator(TrainingOrchestrator):
                 "bind": _QUANTDB_DATA_MOUNT_DIR,
                 "mode": "ro",
             }
+            owned_root = os.getenv("QM_OWN_WAREHOUSE_ROOT", "").strip()
+            if owned_root and (Path(owned_root) / "STORE.json").is_file():
+                # Persistent SQL catalog paths are host-absolute. Mount at the
+                # same path; the data_dir alias still selects the catalog reader.
+                volumes[owned_root] = {"bind": owned_root, "mode": "ro"}
             logger.info(
                 "[%s] QuantDB data mounted: %s (host) -> %s",
                 run_id,
@@ -989,6 +1014,7 @@ class LocalDockerOrchestrator(TrainingOrchestrator):
                     "USE_LOCAL_DATA": "true",
                     "TRAINING_LOCAL_DATA_DIR": _LOCAL_DATA_MOUNT_DIR,
                     "TRAINING_CACHE_DIR": "/tmp",
+                    "QM_OWN_WAREHOUSE_ROOT": os.getenv("QM_OWN_WAREHOUSE_ROOT", ""),
                     "QLIB_PROVIDER_URI": os.getenv("QLIB_PROVIDER_URI", ""),
                     # 市场数据根目录（train.py 按 context.market 选择读哪个 env）
                     _MARKET_MOUNT_ENV_VARS[_train_market]: _market_data_mount(_train_market)[1],

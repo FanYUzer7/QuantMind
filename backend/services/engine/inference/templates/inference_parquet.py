@@ -68,22 +68,8 @@ _DEFAULT_DATA_DIR = "/app/db/feature_snapshots"
 
 
 def _quantdb_reader(meta: dict, data_dir: Path):
-    """Open the immutable raw QuantDB source for new direct-read models."""
-    if meta.get("data_source") != "quantdb_factors":
-        return None
-    from backend.services.engine.data_platform.quantdb_factor_reader import QuantDBFactorReader
-
-    pinned_dir = Path(str(meta.get("quantdb_dir") or ""))
-    if pinned_dir.is_dir():
-        return QuantDBFactorReader(pinned_dir)
-    # 兼容：训练时 quantdb_dir 为 /tmp 临时目录，推理时回退到市场数据目录
-    try:
-        from backend.services.engine.data_platform.quantdb_factor_reader import market_data_dir
-
-        m = (meta.get("context") or {}).get("market") or "CN"
-        return QuantDBFactorReader(market_data_dir(m))
-    except Exception:
-        return QuantDBFactorReader(data_dir)
+    from backend.services.engine.inference.data_loader import _quantdb_reader as open_reader
+    return open_reader(meta, data_dir)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -554,10 +540,14 @@ def _merge_industry_codes(df: pd.DataFrame, needed: list[str]) -> pd.DataFrame:
             if _p.exists():
                 _detail = _p
                 break
-        if _detail is None:
+        if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+            from backend.services.engine.data_platform.market_hub import get_hub_for_market
+            ind_df = get_hub_for_market("CN").fetch_stock_list().rename(columns={"Symbol": "symbol"})
+        elif _detail is None:
             logger.warning("行业映射表缺失，%s 将填 0", needed)
             return df
-        ind_df = pd.read_parquet(_detail, engine="pyarrow")
+        else:
+            ind_df = pd.read_parquet(_detail, engine="pyarrow")
         sym_col = "symbol" if "symbol" in ind_df.columns else ("wind_code" if "wind_code" in ind_df.columns else None)
         if not sym_col or "rs_hycode_sim" not in ind_df.columns:
             logger.warning("行业映射表缺列，%s 将填 0", needed)

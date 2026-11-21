@@ -20,6 +20,11 @@ def get_hub_for_market(market: str | None = None) -> Any | None:
     """
     market_upper = str(market or "").upper() or "CN"
 
+    import os
+    if market_upper in {"CN", "A"} and os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+        from .own_data.hub import OwnWarehouseHub
+        return OwnWarehouseHub.get_instance()
+
     _MARKET_HUB = {
         "CN": ("backend.services.engine.data_platform.quantdb_hub", "QuantDBDataHub"),
         "HK": ("backend.services.engine.data_platform.quanthk_hub", "QuantHKDataHub"),

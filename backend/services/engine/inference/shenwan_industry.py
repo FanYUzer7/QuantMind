@@ -50,6 +50,13 @@ def load_shenwan_industry_map() -> dict[str, str]:
 
 
 def _load_from_parquet() -> pd.DataFrame | None:
+    import os
+    if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+        from backend.services.engine.data_platform.market_hub import get_hub_for_market
+
+        frame = get_hub_for_market("CN").fetch_instrument_industry()
+        frame["symbol"] = frame["symbol"].map(StockCodeUtil.normalize)
+        return frame.dropna(subset=["industry"]).drop_duplicates("symbol", keep="last")
     path = _resolve_instrument_detail_path()
     if path is None:
         return None

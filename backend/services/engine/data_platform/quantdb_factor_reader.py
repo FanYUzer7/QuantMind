@@ -201,6 +201,23 @@ def _quote(identifier: str) -> str:
 class QuantDBFactorReader:
     """Read one raw QuantDB factor source without materialising a snapshot."""
 
+    def __new__(cls, data_dir=None, market=None):
+        # Compatibility constructor for existing training/inference consumers.
+        # Owned data uses the catalog reader; other markets/snapshots keep their
+        # existing backend. There is no fallback if an explicitly supplied path is missing.
+        owned = os.getenv("QM_OWN_WAREHOUSE_ROOT", "").strip()
+        candidate = Path(data_dir or owned) if (data_dir or owned) else None
+        if (
+            cls is QuantDBFactorReader
+            and normalize_market(market) == "CN"
+            and candidate is not None
+            and (candidate / "STORE.json").is_file()
+        ):
+            from .own_data.factor_reader import CurrentFactorReader
+
+            return object.__new__(CurrentFactorReader)
+        return object.__new__(cls)
+
     def __init__(
         self,
         data_dir: str | Path | None = None,
@@ -210,6 +227,9 @@ class QuantDBFactorReader:
             self.data_dir = Path(data_dir)
         else:
             self.data_dir = market_data_dir(market)
+        # Freeze an owned-release alias for this reader's entire query session.
+        if self.data_dir.is_symlink():
+            self.data_dir = self.data_dir.resolve()
         # 仅扫描模式判定用：CUSTOM 市场只扫描因子列，不强制 OHLCV。
         # 显式传 data_dir 且未传 market 时保持 CN 口径（历史行为不变）。
         self.market = normalize_market(market) if market is not None else "CN"

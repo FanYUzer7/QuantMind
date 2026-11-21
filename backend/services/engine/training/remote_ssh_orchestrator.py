@@ -388,8 +388,14 @@ class RemoteSSHOrchestrator(TrainingOrchestrator):
         self._log(run_id, "[SYSTEM] 远程训练启动（AutoDL），开始同步数据...", status="provisioning", progress=5)
 
         try:
-            # Direct jobs bind exactly one raw QuantDB source; legacy jobs keep
-            # their immutable snapshot mount for historical model compatibility.
+            # Owned data must not silently become the remote node's unrelated data.
+            owned_root = os.getenv("QM_OWN_WAREHOUSE_ROOT", "").strip()
+            market = str((payload.get("context") or {}).get("market") or "CN").upper()
+            if owned_root and (Path(owned_root) / "STORE.json").is_file() and payload.get("factor_source") and market in {"A", "CN"}:
+                raise RuntimeError(
+                    "当前自有仓库支持本地训练；远程节点尚未接入该仓库，拒绝改读远端 QuantDB。"
+                )
+            # Legacy jobs keep their existing immutable snapshot compatibility.
             # ── 数据探针（时间切分的唯一来源）────────────────────────────────
             # 切分不再依赖后端因子目录的草稿/发布状态：直接探针读取本节点
             # （远程 AutoDL）自己的 QuantDB 窗口与交易日序列，本地/远端各自自洽。

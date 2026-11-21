@@ -114,9 +114,7 @@ def test_read_range_pool_symbols_pushdown_suffix_storage(tmp_path):
     ) == {"600001.SH", "000001.SZ"}
 
     # 池内标的在区间/数据源内无记录 → 空 frame（上游 loading 据此报错）
-    assert reader.read_range(
-        "l1_factors", **kwargs, pool_symbols=["600002.SH"]
-    ).empty
+    assert reader.read_range("l1_factors", **kwargs, pool_symbols=["600002.SH"]).empty
     # 脏输入被白名单丢弃 → fail fast（绝不能退化成全市场）
     with pytest.raises(QuantDBFactorError, match="无法解析出任何有效代码"):
         reader.read_range("l1_factors", **kwargs, pool_symbols=["'; DROP TABLE--"])
@@ -223,14 +221,20 @@ def test_hk_l1_dt_date_alias_ready_and_read(tmp_path):
     status = reader.assert_ready("l1_factors", start="2024-01-02", end="2024-01-02")
     assert status.ready
 
-    data = reader.read_day("l1_factors", features=["mom_ret_1d"], trade_date="2024-01-02")
+    data = reader.read_day(
+        "l1_factors", features=["mom_ret_1d"], trade_date="2024-01-02"
+    )
     assert set(data["symbol"]) == {"0001.HK", "0002.HK"}
     assert data["close"].tolist() == [10, 10]
 
 
 def test_secondary_source_ohlcv_donor_from_l1(tmp_path):
-    _write_factor_partition(tmp_path, "l1_factors", _hk_l1_frame("2024-01-02", 10), "20240102")
-    _write_factor_partition(tmp_path, "ccass_factors", _hk_signal_frame("2024-01-02"), "20240102")
+    _write_factor_partition(
+        tmp_path, "l1_factors", _hk_l1_frame("2024-01-02", 10), "20240102"
+    )
+    _write_factor_partition(
+        tmp_path, "ccass_factors", _hk_signal_frame("2024-01-02"), "20240102"
+    )
 
     reader = QuantDBFactorReader(tmp_path)
     status = reader.assert_ready("ccass_factors", start="2024-01-02", end="2024-01-02")
@@ -245,7 +249,9 @@ def test_secondary_source_ohlcv_donor_from_l1(tmp_path):
 
 
 def test_secondary_source_without_donor_is_not_ready(tmp_path):
-    _write_factor_partition(tmp_path, "ccass_factors", _hk_signal_frame("2024-01-02"), "20240102")
+    _write_factor_partition(
+        tmp_path, "ccass_factors", _hk_signal_frame("2024-01-02"), "20240102"
+    )
     status = QuantDBFactorReader(tmp_path).describe("ccass_factors")
     assert not status.ready
     assert set(status.missing_required) == set(
@@ -261,7 +267,11 @@ def test_custom_market_scan_only_without_ohlcv(tmp_path):
         tmp_path,
         "l1_factors",
         pd.DataFrame(
-            {"symbol": ["MY001", "MY002"], "date": ["2024-01-02", "2024-01-02"], "my_alpha": [1.0, 2.0]}
+            {
+                "symbol": ["MY001", "MY002"],
+                "date": ["2024-01-02", "2024-01-02"],
+                "my_alpha": [1.0, 2.0],
+            }
         ),
         "20240102",
     )
@@ -272,3 +282,37 @@ def test_custom_market_scan_only_without_ohlcv(tmp_path):
     assert status.ready
     assert status.missing_required == []
     assert "my_alpha" in status.columns
+
+
+@pytest.mark.parametrize("pool", [["000001.SZ"], ["SZ000001"], ["000001"]])
+def test_native_training_pool_accepts_supplier_suffix_symbols(tmp_path, pool):
+    import sys
+    from pathlib import Path
+
+    training = Path(__file__).resolve().parents[3] / "docker/training"
+    sys.path.insert(0, str(training))
+    try:
+        from data.loading import load_data
+
+        for i, day in enumerate(pd.bdate_range("2024-01-02", "2024-02-09")):
+            _write_factor_partition(
+                tmp_path,
+                "l1_factors",
+                _frame(str(day.date()), 10 + i),
+                day.strftime("%Y%m%d"),
+            )
+        frame, used = load_data(
+            "2024-01-08",
+            "2024-01-19",
+            ["l1_alpha"],
+            target_mode="lab_return",
+            local_dir=str(tmp_path),
+            quantdb_dir=str(tmp_path),
+            factor_source="l1_factors",
+            pool_symbols=pool,
+        )
+        assert used == ["l1_alpha"]
+        assert set(frame.symbol) == {"000001.SZ"}
+        assert len(frame) == 10 and frame.label.notna().all()
+    finally:
+        sys.path.remove(str(training))

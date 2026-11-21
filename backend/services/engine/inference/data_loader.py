@@ -31,8 +31,11 @@ def _quantdb_reader(meta: dict, data_dir: Path):
         return None
     from backend.services.engine.data_platform.quantdb_factor_reader import QuantDBFactorReader
 
-    pinned_dir = Path(str(meta.get("quantdb_dir") or ""))
-    return QuantDBFactorReader(pinned_dir if pinned_dir.is_dir() else data_dir)
+    configured = str(meta.get("quantdb_dir") or "").strip()
+    pinned_dir = Path(configured) if configured else data_dir
+    if not pinned_dir.is_dir():
+        raise FileNotFoundError(f"Configured model data directory is missing: {pinned_dir}")
+    return QuantDBFactorReader(pinned_dir)
 
 
 def resolve_parquet_path(data_dir: Path, trade_date: str, meta: dict | None = None) -> Path | None:

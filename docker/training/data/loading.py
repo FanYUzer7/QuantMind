@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from backend.services.engine.data_platform.own_data.current import owned_read
 import pyarrow.parquet as pq
 
 from data.splits import _EXECUTION_LAG_DAYS
@@ -134,6 +136,7 @@ def _coverage_tolerance_days() -> int:
         return 35
 
 
+@owned_read
 def load_data(
     train_start: str,
     train_end: str,
@@ -463,6 +466,10 @@ def load_data(
         # 行业条件化：合并 ind_code_l1（CSRC 一级行业编码）
         if industry_as_feature or "ind_code_l1" in features:
             try:
+                owned_detail = None
+                if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+                    from backend.services.engine.data_platform.market_hub import get_hub_for_market
+                    owned_detail = get_hub_for_market("CN").fetch_stock_list().rename(columns={"Symbol": "symbol"})
                 # 优先从 QuantDB 全量挂载目录查找，回退到 feature_snapshots 子目录
                 _qdb_mount = os.getenv("QUANTDB_DATA_DIR", "/tmp/quantdb_data")
                 _sector_dirs = [
@@ -478,8 +485,8 @@ def load_data(
                             break
                     if ind_detail_path is not None:
                         break
-                if ind_detail_path is not None:
-                    ind_df = pd.read_parquet(ind_detail_path, engine="pyarrow")
+                if ind_detail_path is not None or owned_detail is not None:
+                    ind_df = owned_detail if owned_detail is not None else pd.read_parquet(ind_detail_path, engine="pyarrow")
                     sym_col = "symbol" if "symbol" in ind_df.columns else "wind_code" if "wind_code" in ind_df.columns else None
                     if sym_col and "rs_hycode_sim" in ind_df.columns:
                         ind_map = ind_df[[sym_col, "rs_hycode_sim"]].dropna()
@@ -499,6 +506,8 @@ def load_data(
                 else:
                     logger.warning("instrument_detail.parquet not found (searched: %s)", ", ".join(str(d) for d in _sector_dirs))
             except Exception as e:
+                if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+                    raise
                 logger.warning("Failed to merge industry data (non-fatal): %s", e)
 
     # ── 过滤北交所（4/8 开头，仅 A 股） ──
@@ -519,7 +528,7 @@ def load_data(
     # 此前缩在 CN-parquet 分支内，直读模式（l1_factors）会静默训成全市场模型。
     # 严格语义：池非空但零命中时直接报错，避免静默错配。
     if pool_symbols and market_upper == "CN":
-        wanted = {str(s).split(".")[0].zfill(6) for s in pool_symbols if str(s).strip()}
+        wanted = {_symbol_core(s) for s in pool_symbols if str(s).strip()}
         if not wanted:
             raise RuntimeError("pool_symbols 非空但无法解析出任何代码")
         if "symbol" not in df.columns:
@@ -528,7 +537,7 @@ def load_data(
         # 双口径匹配：直读分支 symbol 为前缀式（SH600036），parquet 分支为
         # 6 位数字——zfill 对 8 位前缀是空操作，单用 6 位集合会零命中误杀。
         _sym_up = df["symbol"].astype(str).str.upper()
-        _sym6 = _sym_up.str.replace(r"^(SH|SZ|BJ)", "", regex=True)
+        _sym6 = _sym_up.str.split(".", n=1).str[0].str.replace(r"^(SH|SZ|BJ)", "", regex=True)
         _wanted_prefix = {_to_prefix_symbol(s) for s in pool_symbols if str(s).strip()}
         df = df[_sym6.isin(wanted) | _sym_up.isin(_wanted_prefix)].copy()
         logger.info(

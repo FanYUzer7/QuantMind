@@ -143,6 +143,23 @@ def _load_real_returns_quantdb(trade_date: str, horizon: int) -> pd.DataFrame:
     import os as _os
     from backend.shared.stock_utils import StockCodeUtil
 
+    if _os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+        from backend.services.engine.data_platform.own_data.warehouse import Warehouse
+        with Warehouse(_os.environ["QM_OWN_WAREHOUSE_ROOT"]) as warehouse:
+            dates = warehouse.connection.execute(
+                "SELECT DISTINCT trade_date FROM research_daily_bars WHERE price_adjustment='hfq' AND trade_date>=?::DATE ORDER BY trade_date LIMIT ?",
+                [str(trade_date)[:10], max(1, int(horizon)) + 1],
+            ).fetchall()
+            if len(dates) <= horizon:
+                return pd.DataFrame(columns=["symbol", "label"])
+            prices = warehouse.connection.execute(
+                "SELECT symbol,trade_date,close FROM research_daily_bars WHERE price_adjustment='hfq' AND trade_date IN (?::DATE,?::DATE)",
+                [str(dates[0][0]), str(dates[horizon][0])],
+            ).fetchdf()
+        panel = prices.pivot(index="symbol", columns="trade_date", values="close")
+        labels = (panel.iloc[:, -1] / panel.iloc[:, 0] - 1).dropna()
+        return labels.rename("label").reset_index()
+
     data_dir = _os.getenv("QM_QUANTDB_DATA_DIR", "/data/quantdb")
     base = _os.path.join(data_dir, "1_kline_data", "daily_backward")
     if not _os.path.isdir(base):

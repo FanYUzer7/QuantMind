@@ -148,6 +148,15 @@ class QuantDBDataHub:
     _instance: QuantDBDataHub | None = None
     _instance_lock = threading.Lock()
 
+    def __new__(cls, data_dir=None):
+        owned = os.getenv("QM_OWN_WAREHOUSE_ROOT", "").strip()
+        if cls is QuantDBDataHub and owned and (Path(owned) / "STORE.json").is_file():
+            if data_dir is None or Path(data_dir).resolve() == Path(owned).resolve():
+                from .own_data.hub import OwnWarehouseHub
+
+                return OwnWarehouseHub(owned)
+        return object.__new__(cls)
+
     def __init__(self, data_dir: str | Path | None = None) -> None:
         # 显式传入目录（如 QuantUS/HK/Futures 子类）时不做自动重解析，尊重调用方
         self._explicit_dir = data_dir is not None

@@ -206,13 +206,20 @@ def compute_position_scores(
 
     # 元数据：行业 + 流通市值(亿) + 板块
     try:
-        import duckdb
-        con = duckdb.connect()
-        meta = con.execute(
-            "SELECT Symbol AS symbol, rs_hyname AS industry, Ltsz AS ltsz "
-            "FROM read_parquet('/data/quantdb/2_base_sector/instrument_detail/**/*.parquet', union_by_name=true) "
-            "WHERE Symbol LIKE '%.SH' OR Symbol LIKE '%.SZ' OR Symbol LIKE '%.BJ'"
-        ).fetchdf()
+        import os
+        if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+            from backend.services.engine.data_platform.market_hub import get_hub_for_market
+            meta = get_hub_for_market("CN").fetch_stock_list().rename(
+                columns={"Symbol": "symbol", "rs_hyname": "industry", "Ltsz": "ltsz"}
+            )[["symbol", "industry", "ltsz"]]
+        else:
+            import duckdb
+            with duckdb.connect() as con:
+                meta = con.execute(
+                    "SELECT Symbol AS symbol, rs_hyname AS industry, Ltsz AS ltsz "
+                    "FROM read_parquet('/data/quantdb/2_base_sector/instrument_detail/**/*.parquet', union_by_name=true) "
+                    "WHERE Symbol LIKE '%.SH' OR Symbol LIKE '%.SZ' OR Symbol LIKE '%.BJ'"
+                ).fetchdf()
         # Ltsz 字段已是亿元单位（如 2124.91 = 平安银行流通市值2124亿），勿再除1e8
         meta["ltsz_yi"] = pd.to_numeric(meta["ltsz"], errors="coerce")
         meta["board"] = meta["symbol"].map(lambda s: _classify_board(_SCU.split_suffix(s)[0] or s))

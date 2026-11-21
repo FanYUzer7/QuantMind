@@ -438,7 +438,6 @@ def run_backtest_async(self, request_dict: dict[str, Any]) -> dict[str, Any]:
 
     try:
         service = _get_qlib_service_instance()
-        service.initialize()
 
         # 进度：10%
         self.update_state(state="PROGRESS", meta={"progress": 0.1, "status": "running"})
@@ -447,7 +446,7 @@ def run_backtest_async(self, request_dict: dict[str, Any]) -> dict[str, Any]:
                 "backtest_id": backtest_id,
                 "progress": 0.1,
                 "status": "running",
-                "message": "Qlib initialized",
+                "message": "Preparing backtest",
             }
         )
 

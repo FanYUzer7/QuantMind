@@ -4,6 +4,8 @@ import exchange_calendars as xcals
 import pytest
 
 from backend.services.engine.inference.script_runner import InferenceScriptRunner
+from backend.services.engine.data_platform.own_data.warehouse import Warehouse
+from backend.tests.data_platform.test_own_current import current  # noqa: F401 (pytest fixture)
 
 
 @pytest.mark.parametrize(
@@ -14,7 +16,12 @@ from backend.services.engine.inference.script_runner import InferenceScriptRunne
         ("2026-10-09", "2026-10-12"),
     ],
 )
-def test_china_prediction_skips_holidays_and_makeup_weekend(data_day, expected):
+def test_china_prediction_skips_holidays_and_makeup_weekend(data_day, expected, current, monkeypatch):
+    root, _, _ = current
+    with Warehouse(root, read_only=False) as warehouse:
+        warehouse.connection.execute("CREATE TABLE quantdb_trading_calendar (TradingDate DATE,IsTradingDay INTEGER)")
+        warehouse.connection.executemany("INSERT INTO quantdb_trading_calendar VALUES (?::DATE,1)", [("2026-09-28",), ("2026-10-08",), ("2026-10-12",)])
+    monkeypatch.setenv("QM_OWN_WAREHOUSE_ROOT", str(root))
     assert InferenceScriptRunner._resolve_prediction_trade_date(data_day) == expected
 
 
@@ -22,6 +29,7 @@ def test_china_prediction_skips_holidays_and_makeup_weekend(data_day, expected):
     "failure", [ImportError("missing"), ValueError("out of range")]
 )
 def test_calendar_failure_does_not_guess_holiday(monkeypatch, failure):
+    monkeypatch.delenv("QM_OWN_WAREHOUSE_ROOT", raising=False)
     def unavailable(*args, **kwargs):
         raise failure
 
@@ -47,6 +55,7 @@ def test_crypto_still_uses_next_natural_day():
 def test_execute_stops_before_script_or_persistence_on_calendar_failure(
     monkeypatch, tmp_path
 ):
+    monkeypatch.delenv("QM_OWN_WAREHOUSE_ROOT", raising=False)
     runner = InferenceScriptRunner(
         primary_model_dir=str(tmp_path), primary_model_id="model_test"
     )

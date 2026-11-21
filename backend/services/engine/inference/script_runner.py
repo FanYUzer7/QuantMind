@@ -124,6 +124,15 @@ def _load_close_price_map(trade_date: str) -> dict[str, float]:
     历史补全 / 批量推理均应走本地 parquet，禁止逐股打远程行情 Redis。
     失败返回空 dict（expected_price 置空，不拖垮写库）。
     """
+    if os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+        from backend.services.engine.data_platform.own_data.warehouse import Warehouse
+
+        with Warehouse(os.environ["QM_OWN_WAREHOUSE_ROOT"]) as w:
+            rows = w.connection.execute(
+                "SELECT symbol,close FROM research_daily_bars WHERE trade_date=?::DATE AND price_adjustment='raw' AND close>0",
+                [str(trade_date)[:10]],
+            ).fetchall()
+        return {re.sub(r"\D", "", StockCodeUtil.normalize(symbol)): float(close) for symbol, close in rows}
     try:
         import pandas as pd
 
@@ -699,6 +708,18 @@ class InferenceScriptRunner:
         from datetime import date as _date, timedelta
 
         market_upper = (market or "A").upper()
+
+        if market_upper in {"A", "CN"} and os.getenv("QM_OWN_WAREHOUSE_ROOT"):
+            import pandas as pd
+            from backend.services.engine.data_platform.market_hub import get_hub_for_market
+            calendar = get_hub_for_market("CN").fetch_calendar(start=data_trade_date)
+            if "TradingDate" not in calendar:
+                raise RuntimeError("Owned trading calendar has no TradingDate field")
+            days = pd.to_datetime(calendar["TradingDate"].astype(str), format="mixed", errors="coerce")
+            days = days[days > pd.Timestamp(str(data_trade_date)[:10])]
+            if days.empty:
+                raise RuntimeError("Owned trading calendar has no next session; update data first")
+            return days.min().date().isoformat()
 
         # 加密货币 7×24，T+1 自然日
         if market_upper == "CRYPTO":
