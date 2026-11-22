@@ -1,0 +1,110 @@
+{
+  "study": "stock-relation-v2-identity-controls",
+  "feature_parent": "factor-correlation-20261119-001",
+  "seeds": [
+    42,
+    123,
+    2026
+  ],
+  "variants": [
+    "local",
+    "market",
+    "relation",
+    "route_only",
+    "state_relation",
+    "uniform_peers"
+  ],
+  "lookback_sessions": 5,
+  "hidden_dimension": 32,
+  "embedding_dimension": 16,
+  "latent_groups": 8,
+  "routing_temperature": 0.5,
+  "epochs": 12,
+  "batch_dates": 16,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "gradient_clip": 1.0,
+  "routing_entropy_penalty": 0.001,
+  "routing_balance_penalty": 0.001,
+  "market_indexes": [
+    "000001.SH",
+    "000300.SH"
+  ],
+  "market_fields": [
+    "log_close",
+    "return_1",
+    "return_5",
+    "return_20",
+    "volatility_20"
+  ],
+  "sample_market_fields": [
+    "positive_return_fraction",
+    "mean_return_1",
+    "return_dispersion_1"
+  ],
+  "market_clip": 8.0,
+  "stock_universe": "Same historical parent feature-ready sample, including SH/SZ growth boards as information sources; trading remains original main-board subset. Does not claim full-sector/leader coverage.",
+  "history": "Five exact exchange sessions, oldest to newest; daily cross-sectional feature ranks plus missing indicators. Missing sessions remain masked, never skip to older observations.",
+  "identity": "Vocabulary fitted only on training-period feature-ready stocks. Unknown stocks use fixed zero embedding and uniform routing; no validation/test identity fitting.",
+  "routing": "route_only retains static lookup routes but removes direct identity head; state_relation routes from current encoded features; uniform_peers uses equal peer aggregation; all leave-self-out.",
+  "shuffle": "Seed/date deterministic independently permuted source assignments among active stocks each date; query assignment unchanged; subtract actual own contribution even after permutation. Same scheme in train/validation/test.",
+  "target": "Same parent next-close-to-five-session-later HFQ return percentile minus .5; mean squared loss averaged within day then equally across days; purge crossing labels.",
+  "ensemble": "For each variant, average same-day full feature-ready-universe percentile ranks of all three seeds. No seed selection.",
+  "training": "Fixed 12 epochs, matched initialization and date order, select argmin validation MSE with earliest tie; save final 12th epoch separately; no seed selection.",
+  "evaluation": "2018-2022 training, 2023 checkpoint selection (not unbiased validation estimate), already-inspected 2024-2025 exploratory test. No fresh holdout claim.",
+  "comparisons": [
+    [
+      "v2_route_only",
+      "v2_relation"
+    ],
+    [
+      "v2_state_relation",
+      "v2_route_only"
+    ],
+    [
+      "v2_state_relation",
+      "v2_uniform_peers"
+    ],
+    [
+      "v2_market",
+      "v2_local"
+    ],
+    [
+      "v2_route_only",
+      "v2_market"
+    ],
+    [
+      "v2_uniform_peers",
+      "v2_market"
+    ]
+  ],
+  "bootstrap": {
+    "block_days": 20,
+    "replicates": 500
+  },
+  "seed": 42,
+  "limitations": [
+    "Vendor daily factor availability remains an assumption, not certified point-in-time",
+    "Only historical sampled stocks provide peer context; may miss sector leaders",
+    "Learned groups are latent, not named industry labels or causal transmission",
+    "Market state affects selection; no learned portfolio exposure/timing head in this experiment",
+    "Fixed small architecture and training budget cannot rule out other relational models"
+  ],
+  "reference_run": "stock-relation-20261120-001",
+  "selection": "Save all fixed 12-epoch traces, select minimum 2023 validation MSE per seed, retain final epoch as paired control; no test selection.",
+  "primary_checkpoint": "best_validation",
+  "seed_backtests": false,
+  "reference_code_sha256": {
+    "model_portfolio_backtest.py": "9aa5c04131731ea9bdf16e1e245bfe95101a1e8d8e3a9aed3321972c1d484b27",
+    "factor_research.py": "bddf5b0863ee57ea2000266b98007c05b86142db62dbf25b04133f1fe1b619b8",
+    "stock_relation_model.py": "c977201e20d45a7f349e5b5f67c6458051b8524c26b0c873b2c31f8e69c751c0",
+    "stock_relation_research.py": "64964e62f323607bff5a2ac001157f1612cf69adb11e27dedd0ef72a8a842d25",
+    "verify_model_portfolio_backtest.py": "6445e348217593a411c62801c24efa001077e0e4f054d12ccaff22169581ad76",
+    "paper_records.py": "b98961788a1390fed8e6ee3d4bbf2c78f29a3f502cb238c6172228c64042ee7f",
+    "factor_correlation_research.py": "d7ac13ce2ad258302bee0c09cbcfe4e446183af21b2581a589225200b098f0ee"
+  },
+  "portfolio_checkpoints": [
+    "best",
+    "last"
+  ]
+}

@@ -237,7 +237,12 @@ scripts/data_repair/_gtja_191_source.py
 # 临时 / 分析 / 备份文件（不提交）
 analysis/
 openbb-cn/
-research/
+research/*
+!research/stock_relations/
+research/stock_relations/*
+!research/stock_relations/*.py
+!research/stock_relations/*.md
+!research/stock_relations/config-v2.json
 scratch/
 # 迁移约定：scratch/ 仅供一次性草稿/探测（丢弃区）。
 # 有沉淀价值的因子审计/校验脚本请移入 backend/scripts/audit/ 以纳入版本控制。
