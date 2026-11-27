@@ -12,7 +12,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.services.live_trading.routers import real_trading
-from backend.services.simulation.routers import simulation, simulation_history, simulation_orders
+from backend.services.simulation.routers import (
+    simulation,
+    simulation_arena,
+    simulation_history,
+    simulation_orders,
+)
 from backend.services.trade.routers import (
     internal_strategy,
     portfolios,
@@ -475,6 +480,7 @@ app.include_router(real_trading.router, prefix="/api/v1/real-trading", tags=["Re
 app.include_router(portfolios.router, prefix="/api/v1/portfolios", tags=["Portfolios"])
 app.include_router(positions.router, prefix="/api/v1", tags=["Positions"])
 app.include_router(simulation.router, prefix="/api/v1/simulation", tags=["Simulation-Account"])
+app.include_router(simulation_arena.router, prefix="/api/v1/simulation", tags=["Simulation-Arena"])
 app.include_router(simulation_orders.router, prefix="/api/v1/simulation", tags=["Simulation-Orders"])
 app.include_router(simulation_history.router, prefix="/api/v1/simulation", tags=["Simulation-Trades"])
 # simulation_batch（无鉴权测试桩 POST /api/v1/simulation/batch/step）已下线，不再挂载

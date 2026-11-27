@@ -33,15 +33,13 @@ class SimulationDailySnapshotService:
         snapshot_at = datetime.combine(snapshot_date, datetime.min.time())
         await self.db.execute(
             delete(SimulationPositionDaily).where(
-                SimulationPositionDaily.tenant_id == tenant_id,
-                SimulationPositionDaily.user_id == user_id,
+                SimulationPositionDaily.account_id == account_id,
                 SimulationPositionDaily.snapshot_date == snapshot_date,
             )
         )
         await self.db.execute(
             delete(SimulationAccountDaily).where(
-                SimulationAccountDaily.tenant_id == tenant_id,
-                SimulationAccountDaily.user_id == user_id,
+                SimulationAccountDaily.account_id == account_id,
                 SimulationAccountDaily.snapshot_date == snapshot_date,
             )
         )

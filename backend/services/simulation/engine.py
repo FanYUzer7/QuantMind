@@ -297,6 +297,7 @@ class SimulationEngine:
         signal_run_id: str | None = None,
         allow_stale_quotes: bool | None = None,
         max_orders: int | None = None,
+        account_id: str | None = None,
     ) -> ExecutionReport:
         """
         执行一次模拟盘调仓周期。
@@ -423,12 +424,13 @@ class SimulationEngine:
                     market=market,
                 )
 
-                # 3. 获取当前账户状态（按市场隔离）
+                # 3. 获取当前账户状态（按市场/子账户隔离）
                 self._ensure_redis()
                 account_data = await self.account_manager.get_account(
                     user_id=canonical_sim_uid(uid),
                     tenant_id=tenant,
                     market=market.value,
+                    account_id=account_id,
                 )
                 if not account_data:
                     logger.warning(
@@ -573,6 +575,7 @@ class SimulationEngine:
                             gate_rules=gate_rules,
                             portfolio_value=float(getattr(account, "total_asset", 0) or 0),
                             daily_trade_count=sim_day_count,
+                            account_id=account_id,
                         )
                         # 被闸门拦截的不计入当日笔数（与实盘排除 REJECTED 口径对齐），
                         # 其余（成交/撮合失败）均计入，避免同轮内笔数限制被绕过。
@@ -635,6 +638,7 @@ class SimulationEngine:
                     user_id=canonical_sim_uid(uid),
                     tenant_id=tenant,
                     market=market.value,
+                    account_id=account_id,
                 )
                 report.account_snapshot = updated_account or {}
 
@@ -1305,6 +1309,7 @@ class SimulationEngine:
         gate_rules: list | None = None,
         portfolio_value: float = 0.0,
         daily_trade_count: int = 0,
+        account_id: str | None = None,
     ) -> ExecutionResult:
         """执行单个订单（虚拟撮合；成功后按开关镜像一笔真单到 QMT）
 
@@ -1334,13 +1339,18 @@ class SimulationEngine:
         await db.flush()
         from backend.services.simulation.models.order_v2 import SimulationOrderV2
 
+        resolved_account_id = (
+            str(account_id).strip()
+            if account_id
+            else f"sim:{tenant_id}:{sim_order.user_id}"
+        )
         db.add(
             SimulationOrderV2(
                 order_id=sim_order.order_id,
                 tenant_id=tenant_id,
                 user_id=str(sim_order.user_id),
                 strategy_id=strategy_id or None,
-                account_id=f"sim:{tenant_id}:{sim_order.user_id}",
+                account_id=resolved_account_id,
                 portfolio_id=int(sim_order.portfolio_id or 0),
                 legacy_order_id=sim_order.id,
                 symbol=sim_order.symbol,
@@ -1408,6 +1418,7 @@ class SimulationEngine:
             market=getattr(market, "value", None),
             snapshot=snapshot,
             allow_stale_market_fill=allow_stale_fill,
+            account_id=resolved_account_id,
         )
         if result.success:
             await exec_engine.apply_filled(sim_order, result)

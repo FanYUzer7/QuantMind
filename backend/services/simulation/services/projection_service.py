@@ -171,11 +171,16 @@ class SimulationProjectionService:
         tenant_id: str,
         user_id: str | int,
         latest_price_loader,
+        account_id: str | None = None,
     ) -> ProjectionSnapshot:
-        account_id = self.build_account_id(tenant_id, user_id)
-        account = await self.db.get(SimulationAccount, account_id)
+        resolved_account_id = (
+            str(account_id).strip()
+            if account_id
+            else self.build_account_id(tenant_id, user_id)
+        )
+        account = await self.db.get(SimulationAccount, resolved_account_id)
         positions = await self._load_positions_from_lots(
-            account_id=account_id,
+            account_id=resolved_account_id,
             latest_price_loader=latest_price_loader,
         )
         return ProjectionSnapshot(account=account, positions=positions)

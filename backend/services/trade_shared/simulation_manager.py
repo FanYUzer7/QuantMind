@@ -283,17 +283,40 @@ return cjson.encode({success=true, unlocked=unlocked})
 
         return normalize_market(market)
 
-    def _get_key(self, user_id: int, tenant_id: str, market: str = "CN") -> str:
+    def _get_key(
+        self,
+        user_id: int,
+        tenant_id: str,
+        market: str = "CN",
+        account_id: str | None = None,
+    ) -> str:
         from backend.shared.simulation_account_keys import (
             account_key,
             canonical_sim_user_suffix,
         )
 
-        return account_key(tenant_id, canonical_sim_user_suffix(user_id), market)
+        return account_key(
+            tenant_id,
+            canonical_sim_user_suffix(user_id),
+            market,
+            account_id=account_id,
+        )
 
-    def _lookup_keys(self, user_id: int, tenant_id: str, market: str = "CN") -> list[str]:
-        from backend.shared.simulation_account_keys import account_lookup_keys
+    def _lookup_keys(
+        self,
+        user_id: int,
+        tenant_id: str,
+        market: str = "CN",
+        account_id: str | None = None,
+    ) -> list[str]:
+        from backend.shared.simulation_account_keys import (
+            account_lookup_keys,
+            is_default_account_id,
+        )
 
+        aid = str(account_id or "").strip()
+        if aid and not is_default_account_id(aid, tenant_id=tenant_id, user_id=user_id):
+            return [self._get_key(user_id, tenant_id, market, account_id=aid)]
         return account_lookup_keys(tenant_id, user_id, market)
 
     def _settings_lookup_keys(self, user_id: int, tenant_id: str) -> list[str]:
@@ -312,10 +335,25 @@ return cjson.encode({success=true, unlocked=unlocked})
                 return
 
     def _pick_cached_account(
-        self, user_id: int, tenant_id: str, market: str
+        self,
+        user_id: int,
+        tenant_id: str,
+        market: str,
+        account_id: str | None = None,
     ) -> dict[str, Any] | None:
-        """在 10000001 / 00000001 / 1 / 0 别名里取最像真实资金的一份，并回写规范键。"""
-        from backend.shared.simulation_account_keys import account_payload_score
+        """在 10000001 / 00000001 / 1 / 0 别名里取最像真实资金的一份，并回写规范键。
+
+        多候选赛马子账户（非默认 ``account_id``）直接按独立键读取，不与主账户别名混淆。
+        """
+        from backend.shared.simulation_account_keys import (
+            account_payload_score,
+            is_default_account_id,
+        )
+
+        aid = str(account_id or "").strip()
+        if aid and not is_default_account_id(aid, tenant_id=tenant_id, user_id=user_id):
+            key = self._get_key(user_id, tenant_id, market, account_id=aid)
+            return read_json_cache(self.redis, key)
 
         canonical = self._get_key(user_id, tenant_id, market)
         best: dict[str, Any] | None = None
@@ -567,12 +605,14 @@ return 0
         initial_cash: float = 1_000_000.0,
         tenant_id: str = "default",
         market: str = "CN",
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         """Initialize or reset simulation account."""
         tenant_id = self._normalize_tenant(tenant_id)
-        key = self._get_key(user_id, tenant_id, market)
+        key = self._get_key(user_id, tenant_id, market, account_id=account_id)
 
         account_data = {
+            "account_id": str(account_id).strip() if account_id else None,
             "cash": initial_cash,
             "available_cash": initial_cash,
             "frozen_cash": 0.0,
@@ -589,9 +629,10 @@ return 0
         self._ensure_client()
         write_json_cache(self.redis, key, account_data)
         logger.info(
-            "Initialized simulation account for tenant=%s user=%s market=%s with %.2f",
+            "Initialized simulation account for tenant=%s user=%s account=%s market=%s with %.2f",
             tenant_id,
             user_id,
+            account_id or "default",
             market,
             initial_cash,
         )
@@ -599,7 +640,11 @@ return 0
         return account_data
 
     async def get_account(
-        self, user_id: int, tenant_id: str = "default", market: str = "CN"
+        self,
+        user_id: int,
+        tenant_id: str = "default",
+        market: str = "CN",
+        account_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Get simulation account state. PG 台账为主、Redis 只是缓存。
 
@@ -610,18 +655,23 @@ return 0
             return None
 
         tenant_id = self._normalize_tenant(tenant_id)
-        data = self._pick_cached_account(user_id, tenant_id, market)
+        data = self._pick_cached_account(
+            user_id, tenant_id, market, account_id=account_id
+        )
         if data:
             return data
-        key = self._get_key(user_id, tenant_id, market)
+        key = self._get_key(user_id, tenant_id, market, account_id=account_id)
 
-        rebuilt = await self._rebuild_from_ledger(user_id, tenant_id, market)
+        rebuilt = await self._rebuild_from_ledger(
+            user_id, tenant_id, market, account_id=account_id
+        )
         if rebuilt:
             write_json_cache(self.redis, key, rebuilt)
             logger.warning(
-                "Simulation account cache miss, rebuilt from PG: tenant=%s user=%s market=%s positions=%d",
+                "Simulation account cache miss, rebuilt from PG: tenant=%s user=%s account=%s market=%s positions=%d",
                 tenant_id,
                 user_id,
+                account_id or "default",
                 market,
                 len(rebuilt.get("positions") or {}),
             )
@@ -630,7 +680,11 @@ return 0
         return None
 
     async def _rebuild_from_ledger(
-        self, user_id: int, tenant_id: str, market: str = "CN"
+        self,
+        user_id: int,
+        tenant_id: str,
+        market: str = "CN",
+        account_id: str | None = None,
     ) -> dict[str, Any] | None:
         """确权：PG 台账为主。Redis 缺键时从 ledger 投影重建（lots→持仓+收盘重估）。
 
@@ -655,6 +709,7 @@ return 0
                 projection = await projection_svc.load_projection(
                     tenant_id=tenant_id,
                     user_id=user_id,
+                    account_id=account_id,
                     latest_price_loader=lambda symbol: _load_close_price(
                         session, symbol
                     ),
@@ -890,6 +945,7 @@ return 0
         is_margin_trade: bool = False,
         market: str = "CN",
         t_plus_1: bool = True,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         """Update account balance after trade execution.
 
@@ -900,13 +956,19 @@ return 0
             return {"success": False, "reason": "REDIS_UNAVAILABLE"}
 
         tenant_id = self._normalize_tenant(tenant_id)
-        cached = self._pick_cached_account(user_id, tenant_id, market)
-        key = self._get_key(user_id, tenant_id, market)
+        cached = self._pick_cached_account(
+            user_id, tenant_id, market, account_id=account_id
+        )
+        key = self._get_key(user_id, tenant_id, market, account_id=account_id)
         if not cached:
             # 交易时需要账户存在。新用户按 100 万建账，但先并入管理员历史别名，
             # 避免把 OSS admin 历史资金覆盖成空账。
             await self.init_account(
-                user_id, initial_cash=1_000_000.0, tenant_id=tenant_id, market=market
+                user_id,
+                initial_cash=1_000_000.0,
+                tenant_id=tenant_id,
+                market=market,
+                account_id=account_id,
             )
 
         if (

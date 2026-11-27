@@ -147,20 +147,75 @@ def report_to_hosted_result(report: Any) -> dict[str, Any]:
     }
 
 
+async def _resolve_model_signal_run_id(
+    tenant_id: str,
+    user_id: str,
+    model_id: str,
+) -> tuple[str | None, str | None]:
+    """为多候选赛马账户按显式 ``model_id`` 解析最新已完成、非兜底的推理批次。"""
+    mid = str(model_id or "").strip()
+    if not mid:
+        return None, "signal_batch_unavailable:missing_model_id"
+    try:
+        from sqlalchemy import text
+
+        from backend.shared.database_manager_v2 import get_session
+
+        today = datetime.now(_SH_TZ).date()
+        async with get_session(read_only=True) as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT s.run_id
+                        FROM engine_signal_scores s
+                        JOIN qm_model_inference_runs r
+                          ON r.run_id = s.run_id
+                         AND r.tenant_id = s.tenant_id
+                         AND r.user_id = s.user_id
+                         AND r.model_id = :model_id
+                         AND r.status = 'completed'
+                         AND COALESCE(r.fallback_used, FALSE) = FALSE
+                        WHERE s.tenant_id = :tenant_id
+                          AND s.user_id = :user_id
+                          AND s.trade_date <= :today
+                        GROUP BY s.run_id, s.trade_date
+                        ORDER BY s.trade_date DESC, MAX(r.created_at) DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "user_id": user_id,
+                        "model_id": mid,
+                        "today": today,
+                    },
+                )
+            ).first()
+        if row and row[0]:
+            return str(row[0]).strip(), None
+        return None, f"signal_batch_unavailable:no_completed_run_for_model:{mid}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"signal_batch_resolve_failed: {exc}"[:300]
+
+
 async def _resolve_hosted_signal_run_id(
     tenant_id: str,
     user_id: str,
+    *,
+    model_id: str | None = None,
 ) -> tuple[str | None, str | None]:
     """解析本轮托管模拟要消费的推理批次。
 
-    托管（含 bootstrap 首次建仓）必须绑定默认模型的单一推理批次。此前调用方
-    从不传 ``signal_run_id``，执行器便退化为「取最新交易日全部信号」，
-    同一天多模型并存时候选池会混合（不同模型 fusion_score 量纲不可比）。
-
-    返回 ``(run_id, error)``：不可用时 ``run_id`` 为 None 并给出可读原因。
-    校验口径复用 ``get_default_model_hosted_status``（默认模型存在性、
-    兜底结果、模型来源、可执行窗口），与手动托管同一套判定。
+    - 若指定 ``model_id``（多候选赛马模式），直接按该模型解析最新非兜底已完成批次；
+    - 否则沿用默认模型链路 ``get_default_model_hosted_status``。
     """
+    if str(model_id or "").strip():
+        return await _resolve_model_signal_run_id(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            model_id=str(model_id).strip(),
+        )
     try:
         from backend.services.live_trading.services.manual_execution_service import (
             manual_execution_service,
@@ -296,6 +351,8 @@ async def run_simulation_cycle_for_active(
     run_id: str | None = None,
     strategy_name: str | None = None,
     trigger_context: dict[str, Any] | None = None,
+    account_id: str | None = None,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """托管模拟盘唯一执行入口：RebalanceCalculator + ashare_matcher。"""
     from backend.services.simulation.engine import simulation_engine
@@ -317,8 +374,9 @@ async def run_simulation_cycle_for_active(
     }
     if cfg.get("pool_id"):
         params_override["pool_id"] = cfg["pool_id"]
+    resolved_model_id = str(model_id or cfg.get("model_id") or "").strip() or None
     signal_run_id, gate_error = await _resolve_hosted_signal_run_id(
-        tenant_id, user_id
+        tenant_id, user_id, model_id=resolved_model_id
     )
     if not signal_run_id:
         # 拿不到可用批次时按严格模式不下单；strict=0 可退回旧行为（仅告警）。
@@ -366,6 +424,7 @@ async def run_simulation_cycle_for_active(
             pool_id=cfg.get("pool_id"),
             signal_run_id=signal_run_id,
             max_orders=int(cfg.get("max_orders_per_cycle") or 0) or None,
+            account_id=account_id,
         )
     except Exception as exc:  # noqa: BLE001
         await _sync_hosted_sim_task(
@@ -630,16 +689,20 @@ def _task_id(
     strategy_id: str,
     trade_date: str,
     phase: str,
+    account_id: str | None = None,
 ) -> str:
+    payload: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "strategy_id": strategy_id,
+        "trade_date": trade_date,
+        "phase": phase,
+        "mode": "SIMULATION",
+    }
+    if account_id:
+        payload["account_id"] = str(account_id).strip()
     source = json.dumps(
-        {
-            "tenant_id": tenant_id,
-            "user_id": user_id,
-            "strategy_id": strategy_id,
-            "trade_date": trade_date,
-            "phase": phase,
-            "mode": "SIMULATION",
-        },
+        payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -654,7 +717,13 @@ def _lock_key(
     strategy_id: str,
     trade_date: str,
     phase: str,
+    account_id: str | None = None,
 ) -> str:
+    if account_id:
+        return (
+            f"qm:hosted:simulation:{tenant_id}:{user_id}:{account_id}:"
+            f"{strategy_id}:{trade_date}:{phase}"
+        )
     return (
         f"qm:hosted:simulation:{tenant_id}:{user_id}:{strategy_id}:{trade_date}:{phase}"
     )
@@ -749,13 +818,17 @@ class SimulationHostedScheduler:
         ):
             return False
 
-        parts = key.split(":")
-        if len(parts) < 4:
-            return False
-        from backend.shared.simulation_account_keys import resolve_active_identity
+        from backend.shared.simulation_account_keys import (
+            parse_active_strategy_account_id,
+            parse_active_strategy_key,
+            resolve_active_identity,
+        )
 
+        parsed = parse_active_strategy_key(key)
+        if not parsed:
+            return False
         tenant_id, user_id = resolve_active_identity(
-            tenant_suffix=parts[-2], user_suffix=parts[-1], payload=active_data
+            tenant_suffix=parsed[0], user_suffix=parsed[1], payload=active_data
         )
         strategy_id = str(active_data.get("strategy_id") or "").strip()
         if not user_id or not strategy_id:
@@ -763,6 +836,22 @@ class SimulationHostedScheduler:
 
         live_trade_config = _normalize_live_trade_config(
             active_data.get("live_trade_config")
+        )
+        account_id = (
+            str(
+                active_data.get("account_id")
+                or parse_active_strategy_account_id(key)
+                or ""
+            ).strip()
+            or None
+        )
+        model_id = (
+            str(
+                active_data.get("model_id")
+                or live_trade_config.get("model_id")
+                or ""
+            ).strip()
+            or None
         )
         started_day = _parse_started_at(active_data.get("started_at"))
         decision = _should_trigger(
@@ -774,10 +863,11 @@ class SimulationHostedScheduler:
             return False
         if not hosted_cycle_ready(decision.phase):
             logger.info(
-                "simulation hosted skip SELL-only window tenant=%s user=%s strategy=%s "
+                "simulation hosted skip SELL-only window tenant=%s user=%s account=%s strategy=%s "
                 "(engine runs sell+buy atomically on BUY/ALL)",
                 tenant_id,
                 user_id,
+                account_id or "default",
                 strategy_id,
             )
             return False
@@ -788,6 +878,7 @@ class SimulationHostedScheduler:
             strategy_id=strategy_id,
             trade_date=decision.trade_date,
             phase=decision.phase,
+            account_id=account_id,
         )
         task_id = _task_id(
             tenant_id=tenant_id,
@@ -795,6 +886,7 @@ class SimulationHostedScheduler:
             strategy_id=strategy_id,
             trade_date=decision.trade_date,
             phase=decision.phase,
+            account_id=account_id,
         )
         try:
             if not self.redis.client.set(lock_key, task_id, ex=36 * 3600, nx=True):
@@ -827,11 +919,15 @@ class SimulationHostedScheduler:
                 live_trade_config=live_trade_config,
                 run_id=task_id,
                 strategy_name=str(active_data.get("strategy_name") or strategy_id),
+                account_id=account_id,
+                model_id=model_id,
                 trigger_context={
                     "run_id": task_id,
                     "phase": decision.phase,
                     "trade_date": decision.trade_date,
                     "trigger": "hosted_scheduler",
+                    "account_id": account_id,
+                    "model_id": model_id,
                 },
             )
             if result.get("status") == "skipped":

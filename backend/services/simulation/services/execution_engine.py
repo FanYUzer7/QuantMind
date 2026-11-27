@@ -43,6 +43,7 @@ class ExecutionResult:
         transfer_fee: float = 0.0,
         market: str = "CN",
         account_snapshot: dict | None = None,
+        account_id: str | None = None,
         price_source: str | None = None,
         requested_quantity: float | None = None,
         quote_timestamp: int | None = None,
@@ -57,6 +58,7 @@ class ExecutionResult:
         self.transfer_fee = transfer_fee
         self.market = market
         self.account_snapshot = account_snapshot
+        self.account_id = account_id
         self.price_source = price_source
         self.requested_quantity = requested_quantity
         self.quote_timestamp = quote_timestamp
@@ -439,6 +441,7 @@ return tostring(granted)
         snapshot: MarketSnapshot | None = None,
         requested_quantity: float | None = None,
         allow_stale_market_fill: bool = False,
+        account_id: str | None = None,
     ) -> ExecutionResult:
         snapshot = snapshot or await self._latest_price(
             order.symbol, user_id=order.user_id, tenant_id=order.tenant_id
@@ -499,7 +502,10 @@ return tostring(granted)
         # 记录更新前的账户快照：供 apply_filled 落库失败时补偿恢复，
         # 保证 Redis 余额/持仓与 sim_orders/sim_trades 的数据一致性（T+1 语义下无法用反向增减安全回退）。
         account_snapshot = await self.manager.get_account(
-            order.user_id, tenant_id=order.tenant_id, market=market_str
+            order.user_id,
+            tenant_id=order.tenant_id,
+            market=market_str,
+            account_id=account_id,
         )
 
         side = str(order.side.value).lower()
@@ -680,6 +686,7 @@ return tostring(granted)
             tenant_id=order.tenant_id,
             market=rules.market.value,
             t_plus_1=rules.t_plus_1,
+            account_id=account_id,
         )
         if not update.get("success"):
             reason = update.get("reason", "BALANCE_UPDATE_FAILED")
@@ -709,6 +716,7 @@ return tostring(granted)
             transfer_fee=transfer_fee,
             market=market_str,
             account_snapshot=account_snapshot,
+            account_id=account_id,
             price_source=price_source,
             requested_quantity=requested_qty,
             quote_timestamp=snapshot.quote_timestamp,
@@ -800,6 +808,7 @@ return tostring(granted)
                 order=order,
                 trade=trade,
                 account_snapshot=before_snapshot,
+                account_id=result.account_id,
             )
             from sqlalchemy import select
 
@@ -873,7 +882,10 @@ return tostring(granted)
             if self.manager.redis and self.manager.redis.client:
                 try:
                     key = self.manager._get_key(
-                        order.user_id, order.tenant_id, result.market
+                        order.user_id,
+                        order.tenant_id,
+                        result.market,
+                        account_id=result.account_id,
                     )
                     if result.account_snapshot is not None:
                         write_json_cache(
@@ -884,6 +896,7 @@ return tostring(granted)
                             order.user_id,
                             tenant_id=order.tenant_id,
                             market=result.market,
+                            account_id=result.account_id,
                         )
                         if not healed:
                             logger.error(

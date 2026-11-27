@@ -1857,6 +1857,12 @@ CREATE TABLE IF NOT EXISTS simulation_accounts (
     account_id              VARCHAR(96) PRIMARY KEY,
     tenant_id               VARCHAR(64) NOT NULL DEFAULT 'default',
     user_id                 VARCHAR(64) NOT NULL,
+    name                    VARCHAR(128) NOT NULL DEFAULT '默认模拟账户',
+    role                    VARCHAR(32) NOT NULL DEFAULT 'champion',
+    bound_model_id          VARCHAR(128),
+    bound_strategy_id       VARCHAR(96),
+    is_default              BOOLEAN NOT NULL DEFAULT FALSE,
+    is_archived             BOOLEAN NOT NULL DEFAULT FALSE,
     base_currency           VARCHAR(16) NOT NULL DEFAULT 'CNY',
     account_type            VARCHAR(32) NOT NULL DEFAULT 'cash',
     status                  VARCHAR(32) NOT NULL DEFAULT 'active',
@@ -1875,8 +1881,10 @@ CREATE TABLE IF NOT EXISTS simulation_accounts (
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_simulation_accounts_tenant_user
+CREATE INDEX IF NOT EXISTS idx_simulation_accounts_tenant_user
     ON simulation_accounts (tenant_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_simulation_accounts_model_active
+    ON simulation_accounts (tenant_id, bound_model_id, is_archived);
 
 -- 60.2 SIMULATION_ACCOUNT_DAILY
 CREATE TABLE IF NOT EXISTS simulation_account_daily (

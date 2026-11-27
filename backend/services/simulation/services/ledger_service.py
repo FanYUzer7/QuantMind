@@ -135,15 +135,25 @@ class SimulationLedgerService:
         *,
         order: Any,
         trade: Any,
-        account_snapshot: dict[str, Any] | None,
+        account_snapshot: dict[str, Any] | None = None,
+        account_id: str | None = None,
     ) -> None:
         tenant_id = str(getattr(order, "tenant_id", None) or "default").strip() or "default"
         user_id = str(getattr(order, "user_id", None) or "").strip()
         if not user_id:
             return
-        account_id = self.build_account_id(tenant_id, user_id)
+        resolved_account_id = (
+            str(account_id or "").strip()
+            or str((account_snapshot or {}).get("account_id") or "").strip()
+            or self.build_account_id(tenant_id, user_id)
+        )
         before_snapshot = dict(account_snapshot or {})
-        account = await self._ensure_account(account_id=account_id, tenant_id=tenant_id, user_id=user_id, account_snapshot=before_snapshot)
+        account = await self._ensure_account(
+            account_id=resolved_account_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            account_snapshot=before_snapshot,
+        )
         after_snapshot = self.apply_trade_to_account_snapshot(
             trade=trade,
             account_snapshot=before_snapshot,
@@ -168,7 +178,7 @@ class SimulationLedgerService:
         )
 
         await self._apply_position_lots(
-            account_id=account_id,
+            account_id=resolved_account_id,
             tenant_id=tenant_id,
             user_id=user_id,
             order=order,

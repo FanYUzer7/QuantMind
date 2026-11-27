@@ -32,13 +32,56 @@ def normalize_market(market: str | None) -> str:
     return market_upper
 
 
-def account_key(tenant_id: str | None, user_id: object, market: str | None = "CN") -> str:
-    """构造模拟账户 Redis 键。user_id 保持调用方原样（不做 zfill/int 改写）。"""
+def account_key(
+    tenant_id: str | None,
+    user_id: object,
+    market: str | None = "CN",
+    *,
+    account_id: str | None = None,
+) -> str:
+    """构造模拟账户 Redis 键。
+
+    - 默认账户（account_id 为空或等于 ``sim:{tenant}:{user}``）：沿用历史键
+      ``simulation:account:{tenant}:{user}``（或带市场后缀）。
+    - 多候选赛马子账户（account_id 非默认）：按 ``account_id`` 隔离，格式
+      ``simulation:account_v2:{account_id}``（非 CN 带 ``:{MARKET}``）。
+    """
     tenant = normalize_tenant(tenant_id)
     user = str(user_id).strip()
-    if normalize_market(market) == "CN":
+    aid = str(account_id or "").strip()
+    mkt = normalize_market(market)
+    if aid and not is_default_account_id(aid, tenant_id=tenant, user_id=user):
+        if mkt == "CN":
+            return f"simulation:account_v2:{aid}"
+        return f"simulation:account_v2:{aid}:{mkt}"
+    if mkt == "CN":
         return f"{ACCOUNT_KEY_PREFIX}{tenant}:{user}"
-    return f"{ACCOUNT_KEY_PREFIX}{tenant}:{user}:{normalize_market(market)}"
+    return f"{ACCOUNT_KEY_PREFIX}{tenant}:{user}:{mkt}"
+
+
+def build_default_account_id(tenant_id: str | None, user_id: object) -> str:
+    """构造默认模拟账户 ID：``sim:{tenant}:{user}``。"""
+    return f"sim:{normalize_tenant(tenant_id)}:{str(user_id).strip()}"
+
+
+def is_default_account_id(
+    account_id: str | None,
+    *,
+    tenant_id: str | None = None,
+    user_id: object | None = None,
+) -> bool:
+    """判断 account_id 是否属于默认单账户格式（sim:{tenant}:{user}）。"""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return True
+    if tenant_id is not None and user_id is not None:
+        tenant = normalize_tenant(tenant_id)
+        for alias in _user_id_aliases(user_id):
+            if aid == f"sim:{tenant}:{alias}":
+                return True
+        return False
+    parts = aid.split(":")
+    return len(parts) == 3 and parts[0] == "sim"
 
 
 def is_admin_sim_user(user_id: object) -> bool:
@@ -200,12 +243,24 @@ def normalize_runtime_tenant(tenant_id: object) -> str:
     return normalize_tenant(tenant_id)
 
 
-def active_strategy_key(tenant_id: object, user_id: object) -> str:
-    """构造 active_strategy 键。禁止各处手写 zfill(8)。"""
-    return (
-        f"{ACTIVE_STRATEGY_KEY_PREFIX}"
-        f"{normalize_runtime_tenant(tenant_id)}:{normalize_runtime_user(user_id)}"
-    )
+def active_strategy_key(
+    tenant_id: object,
+    user_id: object,
+    *,
+    account_id: str | None = None,
+) -> str:
+    """构造 active_strategy 键。禁止各处手写 zfill(8)。
+
+    多候选赛马子账户传入非默认 ``account_id`` 时，键后缀追加 ``:{account_id}``，
+    以便同一用户在 Redis 中并行托管多个模拟账户。
+    """
+    tenant = normalize_runtime_tenant(tenant_id)
+    user = normalize_runtime_user(user_id)
+    base = f"{ACTIVE_STRATEGY_KEY_PREFIX}{tenant}:{user}"
+    aid = str(account_id or "").strip()
+    if aid and not is_default_account_id(aid, tenant_id=tenant, user_id=user):
+        return f"{base}:acc:{aid}"
+    return base
 
 
 def active_strategy_lookup_keys(tenant_id: object, user_id: object) -> list[str]:
@@ -233,17 +288,38 @@ def active_strategy_lookup_keys(tenant_id: object, user_id: object) -> list[str]
 
 
 def parse_active_strategy_key(key: str) -> tuple[str, str] | None:
-    """解析 active 键 -> (tenant后缀, user后缀)，格式不对返回 None。"""
+    """解析 active 键 -> (tenant后缀, user后缀)，格式不对返回 None。
+
+    兼容多账户扩展键 ``trade:active_strategy:{tenant}:{user}:acc:{account_id}``，
+    此时只返回 user 部分（不含 ``:acc:...``）。
+    """
     parts = str(key or "").split(":")
     if len(parts) < 4:
         return None
     if parts[0] != "trade" or parts[1] != "active_strategy":
         return None
     tenant = parts[2].strip() or "default"
-    user = ":".join(parts[3:]).strip()
+    rest = parts[3:]
+    if "acc" in rest:
+        acc_idx = rest.index("acc")
+        user = ":".join(rest[:acc_idx]).strip()
+    else:
+        user = ":".join(rest).strip()
     if not user:
         return None
     return tenant, user
+
+
+def parse_active_strategy_account_id(key: str) -> str | None:
+    """从 active_strategy 键提取可选的 ``account_id``（多账户模式）。"""
+    parts = str(key or "").split(":")
+    if len(parts) >= 6 and parts[0] == "trade" and parts[1] == "active_strategy":
+        rest = parts[3:]
+        if "acc" in rest:
+            acc_idx = rest.index("acc")
+            aid = ":".join(rest[acc_idx + 1 :]).strip()
+            return aid or None
+    return None
 
 
 def resolve_active_identity(

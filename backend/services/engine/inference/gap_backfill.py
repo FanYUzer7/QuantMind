@@ -586,18 +586,27 @@ def list_default_models(
     tenant_id: str | None = None,
     user_id: str | None = None,
     model_id: str | None = None,
+    include_arena_bound: bool = True,
+    db_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    """列出用户默认模型（is_default=TRUE 且 ready/active）。"""
+    """列出需要每日自动补齐推理的模型：
+    1) 用户默认模型（qm_user_models.is_default = TRUE）
+    2) 活跃模拟赛马账户绑定的模型（simulation_accounts.bound_model_id，is_archived = FALSE）
+    两者均要求 status IN ('ready', 'active') 且 storage_path 非空，并按 (tenant_id, user_id, model_id) 去重。
+    """
+    import json
     import os
 
     from sqlalchemy import create_engine as sa_create_engine
     from sqlalchemy import text as sa_text
     from sqlalchemy.orm import sessionmaker as sa_sessionmaker
 
-    sync_db_url = str(os.getenv("DATABASE_URL", "")).strip()
+    sync_db_url = str(db_url or os.getenv("DATABASE_URL", "")).strip()
     if "+asyncpg" in sync_db_url:
         sync_db_url = sync_db_url.replace("+asyncpg", "+psycopg2")
-    if not sync_db_url or "postgresql" not in sync_db_url:
+    if not sync_db_url or (
+        "postgresql" not in sync_db_url and "sqlite" not in sync_db_url
+    ):
         sync_db_url = (
             "postgresql+psycopg2://postgres:quantmind2026@"
             "quantmind-postgresql:5432/quantmind"
@@ -607,40 +616,75 @@ def list_default_models(
     Session = sa_sessionmaker(bind=engine)
     db = Session()
     try:
-        clauses = [
-            "is_default = TRUE",
-            "status IN ('ready', 'active')",
-            "storage_path IS NOT NULL",
-            "TRIM(storage_path) <> ''",
+        base_clauses = [
+            "m.status IN ('ready', 'active')",
+            "m.storage_path IS NOT NULL",
+            "TRIM(m.storage_path) <> ''",
         ]
         params: dict[str, Any] = {}
         if tenant_id:
-            clauses.append("tenant_id = :tenant_id")
+            base_clauses.append("m.tenant_id = :tenant_id")
             params["tenant_id"] = tenant_id
         if user_id:
-            clauses.append("user_id = :user_id")
+            base_clauses.append("m.user_id = :user_id")
             params["user_id"] = user_id
         if model_id:
-            clauses.append("model_id = :model_id")
+            base_clauses.append("m.model_id = :model_id")
             params["model_id"] = model_id
-        rows = db.execute(
-            sa_text(
-                f"""
-                SELECT tenant_id, user_id, model_id, storage_path, metadata_json
-                FROM qm_user_models
-                WHERE {" AND ".join(clauses)}
-                ORDER BY tenant_id, user_id, model_id
-                """
-            ),
-            params,
-        ).mappings().all()
+
+        default_clauses = ["m.is_default = TRUE", *base_clauses]
+        rows = list(
+            db.execute(
+                sa_text(
+                    f"""
+                    SELECT m.tenant_id, m.user_id, m.model_id, m.storage_path, m.metadata_json
+                    FROM qm_user_models m
+                    WHERE {" AND ".join(default_clauses)}
+                    ORDER BY m.tenant_id, m.user_id, m.model_id
+                    """
+                ),
+                params,
+            ).mappings().all()
+        )
+
+        if include_arena_bound:
+            try:
+                arena_rows = db.execute(
+                    sa_text(
+                        f"""
+                        SELECT DISTINCT m.tenant_id, m.user_id, m.model_id, m.storage_path, m.metadata_json
+                        FROM qm_user_models m
+                        JOIN simulation_accounts a
+                          ON a.tenant_id = m.tenant_id
+                         AND a.bound_model_id = m.model_id
+                         AND COALESCE(a.is_archived, FALSE) = FALSE
+                        WHERE {" AND ".join(base_clauses)}
+                        ORDER BY m.tenant_id, m.user_id, m.model_id
+                        """
+                    ),
+                    params,
+                ).mappings().all()
+                rows.extend(arena_rows)
+            except Exception as exc:
+                # 存量库若尚未执行 upgrade_v1.0.16.sql，平滑降级为仅默认模型。
+                logger.warning(
+                    "[DefaultInferenceBackfill] arena bound_model_id query skipped: %s",
+                    exc,
+                )
+
+        seen: set[tuple[str, str, str]] = set()
         out: list[dict[str, Any]] = []
         for row in rows:
+            t_id = str(row["tenant_id"] or "default")
+            u_id = str(row["user_id"] or "")
+            m_id = str(row["model_id"] or "")
+            dedup_key = (t_id, u_id, m_id)
+            if not m_id or dedup_key in seen:
+                continue
+            seen.add(dedup_key)
             meta = row.get("metadata_json")
             if isinstance(meta, str):
                 try:
-                    import json
-
                     meta = json.loads(meta)
                 except Exception:
                     meta = {}
@@ -648,9 +692,9 @@ def list_default_models(
                 meta = {}
             out.append(
                 {
-                    "tenant_id": str(row["tenant_id"] or "default"),
-                    "user_id": str(row["user_id"] or ""),
-                    "model_id": str(row["model_id"] or ""),
+                    "tenant_id": t_id,
+                    "user_id": u_id,
+                    "model_id": m_id,
                     "storage_path": str(row["storage_path"] or ""),
                     "metadata_json": meta,
                 }
@@ -761,6 +805,36 @@ async def backfill_all_default_models(
             detail.get("failed"),
             detail["gap"],
         )
+
+    # 同步回填全部活跃模型（默认模型 + 赛马账户绑定模型）的 T+5 Rank IC 质量记录
+    if not dry_run and models:
+        try:
+            from backend.services.engine.inference.inference_quality_backfill import (
+                inference_quality_backfill,
+            )
+
+            quality_results: list[dict[str, Any]] = []
+            for m in models:
+                try:
+                    qres = await inference_quality_backfill.backfill_recent(
+                        tenant_id=m["tenant_id"],
+                        user_id=m["user_id"],
+                        model_id=m["model_id"],
+                        days=30,
+                    )
+                    quality_results.append(qres)
+                except Exception as qexc:
+                    logger.warning(
+                        "[DefaultInferenceBackfill] quality backfill skipped for %s: %s",
+                        m["model_id"],
+                        qexc,
+                    )
+            summary["quality_backfill"] = quality_results
+        except Exception as qexc:
+            logger.warning(
+                "[DefaultInferenceBackfill] quality backfill import/run skipped: %s",
+                qexc,
+            )
 
     if summary["failed"] and not summary["completed"] and not summary["partial"]:
         summary["status"] = "failed"

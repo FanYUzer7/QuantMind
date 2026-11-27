@@ -4,7 +4,7 @@ Simulation account ledger root model.
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, String
+from sqlalchemy import Boolean, DateTime, Float, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.services.simulation.models import Base, TimestampMixin
@@ -18,6 +18,20 @@ class SimulationAccount(Base, TimestampMixin):
         String(64), nullable=False, default="default", index=True
     )
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, default="默认模拟账户")
+    role: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="champion", index=True
+    )
+    bound_model_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    bound_strategy_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
     base_currency: Mapped[str] = mapped_column(
         String(16), nullable=False, default="CNY"
     )
@@ -47,6 +61,11 @@ class SimulationAccount(Base, TimestampMixin):
             "idx_simulation_accounts_tenant_user",
             "tenant_id",
             "user_id",
-            unique=True,
+        ),
+        Index(
+            "idx_simulation_accounts_model_active",
+            "tenant_id",
+            "bound_model_id",
+            "is_archived",
         ),
     )

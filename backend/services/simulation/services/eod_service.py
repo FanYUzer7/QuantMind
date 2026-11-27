@@ -145,7 +145,12 @@ def _read_short_proceeds(tenant_id: str, user_id: str) -> float:
 
 
 async def _eod_position_snapshot_exists(
-    session, tenant_id: str, user_id: str, trade_date: date
+    session,
+    tenant_id: str,
+    user_id: str,
+    trade_date: date,
+    *,
+    account_id: str | None = None,
 ) -> bool:
     """该日 EOD 持仓快照是否已存在（= 日终已结算过）。
 
@@ -157,15 +162,17 @@ async def _eod_position_snapshot_exists(
             SimulationPositionDaily,
         )
 
+        conds = [SimulationPositionDaily.snapshot_date == trade_date]
+        if account_id:
+            conds.append(SimulationPositionDaily.account_id == str(account_id))
+        else:
+            conds.append(SimulationPositionDaily.tenant_id == tenant_id)
+            conds.append(SimulationPositionDaily.user_id == str(user_id))
         count = (
             await session.execute(
                 select(func.count())
                 .select_from(SimulationPositionDaily)
-                .where(
-                    SimulationPositionDaily.tenant_id == tenant_id,
-                    SimulationPositionDaily.user_id == str(user_id),
-                    SimulationPositionDaily.snapshot_date == trade_date,
-                )
+                .where(*conds)
             )
         ).scalar_one_or_none()
         return bool(count)
@@ -208,6 +215,7 @@ async def _execute_eod(trade_date: date) -> bool:
                     projection = await projection_svc.load_projection(
                         tenant_id=account.tenant_id,
                         user_id=account.user_id,
+                        account_id=account.account_id,
                         latest_price_loader=lambda symbol: _load_close_price(
                             session, symbol
                         ),
@@ -262,7 +270,11 @@ async def _execute_eod(trade_date: date) -> bool:
                     # 会把该日曲线写错（实测重启当日把 09-23 曲线写成本日持仓）。
                     # 此时只刷新 Redis 现值，不改历史日快照。
                     if await _eod_position_snapshot_exists(
-                        session, account.tenant_id, account.user_id, trade_date
+                        session,
+                        account.tenant_id,
+                        account.user_id,
+                        trade_date,
+                        account_id=account.account_id,
                     ):
                         logger.info(
                             "EOD daily snapshot for %s already exists (%s), "
@@ -400,7 +412,17 @@ def _rebuild_redis(
 ) -> None:
     if not redis_client.client:
         return
-    sim_key = f"simulation:account:{tenant_id}:{str(user_id).strip()}"
+    from backend.shared.simulation_account_keys import (
+        account_key,
+        is_default_account_id,
+    )
+
+    sim_key = account_key(
+        tenant_id,
+        str(user_id).strip(),
+        "CN",
+        account_id=account.account_id,
+    )
     # 空投影保护：ledger 为空（live 台账未建/迁移未跑）时 projection.positions 为空，
     # 此时覆盖会把 Redis 里的实盘持仓清零（"回到初始状态"）。跳过并告警。
     if not positions and _redis_live_position_count(sim_key) > 0:
@@ -418,12 +440,16 @@ def _rebuild_redis(
             (read_json_cache(redis_client, sim_key) or {}).get("short_proceeds") or 0.0
         ),
     )
+    payload["account_id"] = account.account_id
     # 保留 PG 不可考的 Redis 独有字段（warning_level / market / t1_settlement_date）
     payload = SimulationProjectionService.merge_preserved(
         read_json_cache(redis_client, sim_key), payload
     )
     write_json_cache(redis_client, sim_key, payload)
-    write_trade_account_cache(redis_client, tenant_id, user_id, payload)
+    if is_default_account_id(
+        account.account_id, tenant_id=tenant_id, user_id=user_id
+    ):
+        write_trade_account_cache(redis_client, tenant_id, user_id, payload)
 
 
 def _local_close_price_sync(symbol: str) -> float:
